@@ -19,7 +19,7 @@ Rollframe is a macOS recorder prototype. The user reports that it is **not worki
 - FFmpeg capture with separate files per video source, a separate microphone WAV, MKV output, and optional MP4 copies.
 - Camera flip setting for previews and new recordings.
 - FFmpeg MJPEG camera previews sent through the Electron main process to the renderer. The latest change limits frames in flight using renderer acknowledgements and drops stale frames. Camera tiles currently use a two-column layout.
-- Capture engine code includes adapted MIT-licensed modules; see `LICENSE-justroll` for the required notice.
+- Capture engine modules were independently replaced on 2026-10-24. The camera preview issues below remain unresolved and need real-device validation.
 
 ## Verification and limits
 
@@ -38,7 +38,7 @@ Rollframe is a macOS recorder prototype. The user reports that it is **not worki
 
 - `main.js`: Electron window, device and session orchestration, preview delivery.
 - `renderer/app.js` and `renderer/styles.css`: interface and preview rendering.
-- `backend/recorder.js` and `backend/ffmpegArgs.js`: recording and preview FFmpeg processes.
+- `backend/recorder.js` and `backend/commands.js`: recording lifecycle and FFmpeg commands.
 - `tests/engine.test.js`: engine tests.
 
 Run locally on macOS with Node.js 20+ and FFmpeg: `npm install`, `npm start`. Run checks with `npm run check`.

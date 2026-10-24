@@ -36,4 +36,4 @@ Grant Screen Recording, Camera, and Microphone access to the app or launching te
 
 ## Contributing and license
 
-Contributions are welcome through issues and pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md). Rollframe is released under the [MIT license](LICENSE). The required third-party MIT notice for adapted capture code is retained in [LICENSE-justroll](LICENSE-justroll). Only the repository owner merges pull requests.
+Contributions are welcome through issues and pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md). Rollframe is released under the [MIT license](LICENSE). Only the repository owner merges pull requests.

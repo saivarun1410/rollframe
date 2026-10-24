@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseDeviceList, pickFramerate } from '../backend/devices.js';
-import { buildJobArgs } from '../backend/ffmpegArgs.js';
-import { buildJobs } from '../backend/recorder.js';
+import { planVideoJobs, videoCommand, cameraPreviewCommand } from '../backend/commands.js';
 
 test('discovers displays, cameras and microphones from FFmpeg output', () => {
   const list = parseDeviceList('[AVFoundation indev @ 0x1] AVFoundation video devices:\n[AVFoundation indev @ 0x1] [0] Camera\n[AVFoundation indev @ 0x1] [1] Capture screen 0\n[AVFoundation indev @ 0x1] AVFoundation audio devices:\n[AVFoundation indev @ 0x1] [0] Microphone');
@@ -11,13 +10,13 @@ test('discovers displays, cameras and microphones from FFmpeg output', () => {
 });
 
 test('groups screens into a single capture job', () => {
-  const jobs = buildJobs([{ label: 'screen-1', type: 'screen' }, { label: 'screen-2', type: 'screen' }, { label: 'camera-1', type: 'camera' }]);
+  const jobs = planVideoJobs([{ label: 'screen-1', type: 'screen' }, { label: 'screen-2', type: 'screen' }, { label: 'camera-1', type: 'camera' }]);
   assert.equal(jobs.length, 2);
   assert.deepEqual(jobs[0].sources.map(x => x.label), ['screen-1', 'screen-2']);
 });
 
 test('maps each screen into its own file', () => {
-  const args = buildJobArgs({ sources: [{ videoIndex: 4, outPath: '/tmp/a.mkv' }, { videoIndex: 5, outPath: '/tmp/b.mkv' }] }, { fps: 30, pixelFormat: 'nv12', captureCursor: true, codec: 'h264_videotoolbox', bitrate: '8M' });
+  const args = videoCommand({ sources: [{ videoIndex: 4, outPath: '/tmp/a.mkv' }, { videoIndex: 5, outPath: '/tmp/b.mkv' }] }, { fps: 30, pixelFormat: 'nv12', captureCursor: true, codec: 'h264_videotoolbox', bitrate: '8M' });
   assert.equal(args.filter(x => x === '-map').length, 2);
   assert.ok(args.includes('0:v'));
   assert.ok(args.includes('1:v'));
@@ -42,18 +41,16 @@ test('reassembles camera preview frames split across pipe chunks', () => {
 });
 
 test('camera job streams a 24 fps preview alongside the recording', () => {
-  const args = buildJobArgs({ sources: [{ type: 'camera', videoIndex: 0, outPath: '/tmp/camera.mkv' }] }, { fps: 30, pixelFormat: 'nv12', codec: 'h264_videotoolbox', bitrate: '8M' });
+  const args = videoCommand({ sources: [{ type: 'camera', videoIndex: 0, outPath: '/tmp/camera.mkv' }] }, { fps: 30, pixelFormat: 'nv12', codec: 'h264_videotoolbox', bitrate: '8M' });
   assert.ok(args.includes('/tmp/camera.mkv'));
   assert.ok(args.includes('pipe:3'));
   assert.ok(args.includes('fps=24,scale=480:-2'));
 });
 
-import { buildCameraPreviewArgs } from '../backend/ffmpegArgs.js';
-
 test('camera flip applies to both recording and preview outputs', () => {
-  const args = buildJobArgs({ sources: [{ type: 'camera', videoIndex: 0, outPath: '/tmp/camera.mkv' }] }, { fps: 30, pixelFormat: 'nv12', codec: 'h264_videotoolbox', bitrate: '8M', flipCamera: true });
+  const args = videoCommand({ sources: [{ type: 'camera', videoIndex: 0, outPath: '/tmp/camera.mkv' }] }, { fps: 30, pixelFormat: 'nv12', codec: 'h264_videotoolbox', bitrate: '8M', flipCamera: true });
   assert.equal(args.filter(value => value === 'hflip').length, 1);
   assert.ok(args.includes('hflip,fps=24,scale=480:-2'));
-  const idle = buildCameraPreviewArgs({ videoIndex: 0, flipCamera: true });
+  const idle = cameraPreviewCommand(0, true);
   assert.ok(idle.includes('hflip,fps=24,scale=480:-2'));
 });
