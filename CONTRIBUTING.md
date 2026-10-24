@@ -18,4 +18,4 @@ Only the repository owner, [@saivarun1410](https://github.com/saivarun1410), mer
 
 ## Licensing
 
-By contributing, you agree that your contribution may be distributed under the project's [MIT license](LICENSE). Capture engine portions adapted from [justroll](https://github.com/kunchenguid/justroll) retain their original MIT notice in [LICENSE-justroll](LICENSE-justroll).
+By contributing, you agree that your contribution may be distributed under the project's [MIT license](LICENSE). Adapted capture code retains its required third-party MIT notice in [LICENSE-justroll](LICENSE-justroll).

@@ -8,7 +8,7 @@ Rollframe is a macOS recorder prototype. The user reports that it is **not worki
 
 ## Product direction
 
-- Build a recorder inspired by [justroll](https://github.com/kunchenguid/justroll), with a more polished desktop interface.
+- Build a polished macOS recorder with separate tracks and a visual desktop interface.
 - Use only black, grey, and white throughout the interface, with black dominant. Keep type and controls consistent.
 - Make camera views large enough to be useful while preserving the full image and natural proportions. The user has asked for left/right camera orientation control.
 - Prioritize a smooth, low-latency live camera view that matches what is recorded.
@@ -19,7 +19,7 @@ Rollframe is a macOS recorder prototype. The user reports that it is **not worki
 - FFmpeg capture with separate files per video source, a separate microphone WAV, MKV output, and optional MP4 copies.
 - Camera flip setting for previews and new recordings.
 - FFmpeg MJPEG camera previews sent through the Electron main process to the renderer. The latest change limits frames in flight using renderer acknowledgements and drops stale frames. Camera tiles currently use a two-column layout.
-- Capture engine code adapted from justroll under its MIT license; see `LICENSE-justroll`.
+- Capture engine code includes adapted MIT-licensed modules; see `LICENSE-justroll` for the required notice.
 
 ## Verification and limits
 

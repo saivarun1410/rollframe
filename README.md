@@ -34,10 +34,6 @@ Grant Screen Recording, Camera, and Microphone access to the app or launching te
 - Add timeline moment markers with **M**. Start or stop with **⌘R**.
 - Browse recent sessions and open their folders.
 
-## Attribution
-
-Capture engine modules in `backend/` are adapted from [justroll](https://github.com/kunchenguid/justroll) by Kun Chen, licensed under MIT. See `LICENSE-justroll`. The desktop interface and orchestration are Rollframe additions.
-
 ## Contributing and license
 
-Contributions are welcome through issues and pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md). Rollframe is released under the [MIT license](LICENSE); the upstream justroll MIT notice is retained in [LICENSE-justroll](LICENSE-justroll). Only the repository owner merges pull requests.
+Contributions are welcome through issues and pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md). Rollframe is released under the [MIT license](LICENSE). The required third-party MIT notice for adapted capture code is retained in [LICENSE-justroll](LICENSE-justroll). Only the repository owner merges pull requests.
