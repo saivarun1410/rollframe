@@ -2,6 +2,14 @@
 
 A prototype with unresolved camera preview lag, choppiness, and sizing issues reported by the user. See [MEMORY.md](MEMORY.md) for the current handoff.
 
+## Screenshots
+
+These screenshots use simulated sources and sample session data, with no personal camera footage or device names.
+
+![Rollframe studio showing source selection and recording settings](screenshots/studio.png)
+
+![Rollframe library showing sample local recordings](screenshots/library.png)
+
 A visual macOS recorder for independent screen, camera, and microphone tracks. Recordings stay on your Mac. Each selected display is captured in one FFmpeg process to avoid macOS concurrent screen capture hangs. Cameras and the microphone use independent processes. Sessions keep crash-safe MKV files, optional MP4 copies, a WAV microphone track, `session.json`, and `notes.md`.
 
 ## Run
@@ -29,3 +37,7 @@ Grant Screen Recording, Camera, and Microphone access to the app or launching te
 ## Attribution
 
 Capture engine modules in `backend/` are adapted from [justroll](https://github.com/kunchenguid/justroll) by Kun Chen, licensed under MIT. See `LICENSE-justroll`. The desktop interface and orchestration are Rollframe additions.
+
+## Contributing and license
+
+Contributions are welcome through issues and pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md). Rollframe is released under the [MIT license](LICENSE); the upstream justroll MIT notice is retained in [LICENSE-justroll](LICENSE-justroll). Only the repository owner merges pull requests.
