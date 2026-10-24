@@ -1,81 +1,22 @@
-// The FfmpegEngine: spawns each capture as its own clean process, parses live progress,
-// and tears everything down cleanly on stop.
-//
-// macOS will hang if two avfoundation screen-capture processes run at once, so all
-// screens are recorded by ONE video-only ffmpeg process with one mapped output per
-// screen. Each camera (and each synthetic self-test source) gets its own process.
-//
-// Audio is NEVER muxed into video. The mic records in its OWN isolated process (clean
-// PCM, nothing competing -> no dropouts, no foreign-clock A/V drift), and the live
-// waveform comes from a separate, decoupled meter tap whose back-pressure can never
-// stall a recording. Because every process gets `q` at the same instant, content ends
-// are synchronized, so on stop we end-align by actual ffprobe duration (`maxDur - dur`)
-// into per-file `startOffsetMs`, and pad the mic's warmup-shortened front with silence so
-// audio.wav drops in at 0 - no reliance on muxed audio content for sync.
 import { spawn } from 'node:child_process';
-import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
-import {
-  buildJobArgs,
-  buildAudioRecordArgs,
-  buildAudioTapArgs,
-  buildRemuxArgs,
-  parseProgress,
-  normalizeProgress,
-} from './ffmpegArgs.js';
-import { rmsFromS16LE, peakFromS16LE, levelToUnit } from './audioMeter.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { audioCommand, meterCommand, mp4Command, parseProgressLines, planVideoJobs, videoCommand } from './commands.js';
 import { createJpegParser } from './jpegStream.js';
 
+function fileBytes(file) {
+  try { return fs.statSync(file).size; } catch { return null; }
+}
 
-const BYTES_PER_SAMPLE = 2;
-const TAP_SAMPLE_RATE = 8000;
-const FRAME_SAMPLES = 256; // ~32ms windows -> smooth waveform
-const FRAME_BYTES = FRAME_SAMPLES * BYTES_PER_SAMPLE;
-
-// Read mono PCM frames off a tap's stdout and emit a level per ~32ms window.
-function pipeLevels(stdout, onLevel) {
-  let leftover = Buffer.alloc(0);
-  stdout.on('data', (chunk) => {
-    let buf = leftover.length ? Buffer.concat([leftover, chunk]) : chunk;
-    let off = 0;
-    while (buf.length - off >= FRAME_BYTES) {
-      const frame = buf.subarray(off, off + FRAME_BYTES);
-      off += FRAME_BYTES;
-      const rms = rmsFromS16LE(frame);
-      onLevel({ unit: levelToUnit(rms), rms, peak: peakFromS16LE(frame) });
-    }
-    leftover = buf.subarray(off);
+function runProcess(binary, args, collect = false) {
+  return new Promise(resolve => {
+    const child = spawn(binary, args, { stdio: ['ignore', collect ? 'pipe' : 'ignore', 'ignore'] });
+    let output = '';
+    if (collect) child.stdout.on('data', data => { output += data; });
+    child.once('error', () => resolve({ ok: false, output }));
+    child.once('close', code => resolve({ ok: code === 0, output }));
   });
-}
-
-function spawnMicTap(ffmpegPath, audioIndex, onLevel) {
-  const tap = spawn(ffmpegPath, buildAudioTapArgs({ audioIndex, sampleRate: TAP_SAMPLE_RATE }), {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  pipeLevels(tap.stdout, onLevel);
-  tap.on('error', () => {}); // metering is non-critical
-  return tap;
-}
-
-// Public helper so the wizard can show a live mic meter before recording starts.
-// Returns a stop() function.
-export function startMicTap({ ffmpegPath = 'ffmpeg', audioIndex, onLevel = () => {} }) {
-  const tap = spawnMicTap(ffmpegPath, audioIndex, onLevel);
-  return () => {
-    try {
-      tap.kill('SIGKILL');
-    } catch {}
-  };
-}
-
-export function buildJobs(sources) {
-  const isAv = (s) => !s.inputFormat || s.inputFormat === 'avfoundation';
-  const screens = sources.filter((s) => s.type === 'screen' && isAv(s));
-  const rest = sources.filter((s) => !(s.type === 'screen' && isAv(s)));
-  const jobs = [];
-  if (screens.length) jobs.push({ id: 'screens', sources: screens });
-  for (const s of rest) jobs.push({ id: s.label, sources: [s] });
-  return jobs;
 }
 
 export class Recorder extends EventEmitter {
@@ -83,328 +24,157 @@ export class Recorder extends EventEmitter {
     super();
     this.plan = plan;
     this.ffmpegPath = ffmpegPath;
-    this.jobs = buildJobs(plan.sources);
-    this.procs = new Map(); // jobId -> child
-    this.jobProgress = new Map(); // jobId -> normalized stats
-    this.jobOf = new Map(); // label -> jobId
-    this.stderr = new Map(); // jobId -> string
-    this.stats = new Map(); // label -> { bytes, fps, drop, seconds }
-    this.tap = null;
-    this.statTimer = null;
-    this.startedAt = null;
-    this.endedAt = null;
+    this.tasks = [];
+    this.progress = new Map();
     this.stopping = false;
-    for (const job of this.jobs) for (const s of job.sources) this.jobOf.set(s.label, job.id);
+    this.stopPromise = null;
+    this.meter = null;
+    this.statsTimer = null;
   }
 
   start() {
     this.startedAt = new Date().toISOString();
-    // Open the mic FIRST so its (slow-warming) avfoundation device isn't queued behind a
-    // capture card opening - this shrinks how much audio start it loses. Its own isolated
-    // process keeps clean PCM; a decoupled meter tap drives the live waveform.
-    if (this.plan.audio) {
-      const child = spawn(
-        this.ffmpegPath,
-        buildAudioRecordArgs({
-          audioIndex: this.plan.audio.index,
-          outPath: this.plan.audio.outPath,
-          gain: this.plan.audio.gain,
-        }),
-        { stdio: ['pipe', 'pipe', 'pipe'] },
-      );
-      this._wireProgress('audio', child);
-      child.on('error', (err) => this.emit('source-error', { label: 'audio', error: err }));
-      child.on('exit', (code, signal) => {
-        const stderr = this.stderr.get('audio');
-        this.emit('source-exit', { label: 'audio', code, signal, stderr });
-        if (!this.stopping && code !== 0 && signal == null) {
-          this.emit('source-error', {
-            label: 'audio',
-            error: new Error((stderr || '').trim() || `audio exited with code ${code}`),
-          });
-        }
-      });
-      this.procs.set('audio', child);
-      this._startTap();
+    const { audio, mic, sources, settings } = this.plan;
+    if (audio) {
+      this.launch('audio', [audio], audioCommand({ index: audio.index, path: audio.outPath, gain: audio.gain }), false);
+      if (mic) this.startMeter(mic.index);
     }
-    // Video-only capture jobs.
-    for (const job of this.jobs) {
-      const liveCamera = job.sources.length === 1 && job.sources[0].type === 'camera';
-      const child = spawn(this.ffmpegPath, buildJobArgs(job, this.plan.settings), {
-        stdio: liveCamera ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
-      });
-      this._wireProgress(job.id, child);
-      if (liveCamera) {
-        const onChunk = createJpegParser((jpeg) => {
-          this.emit('preview', { label: job.sources[0].label, jpeg });
-        });
-        child.stdio[3].on('data', onChunk);
-      }
-      child.on('error', (err) => this._failJob(job, err));
-      child.on('exit', (code, signal) => {
-        const stderr = this.stderr.get(job.id);
-        for (const s of job.sources)
-          this.emit('source-exit', { label: s.label, code, signal, stderr });
-        if (!this.stopping && code !== 0 && signal == null) {
-          this._failJob(
-            job,
-            new Error((stderr || '').trim() || `${job.id} exited with code ${code}`),
-          );
-        }
-      });
-      this.procs.set(job.id, child);
+    for (const job of planVideoJobs(sources)) {
+      const camera = job.sources.length === 1 && job.sources[0].type === 'camera';
+      this.launch(job.id, job.sources, videoCommand(job, settings), camera);
     }
-    this._startStatPoll();
+    this.statsTimer = setInterval(() => this.reportStats(), 400);
     this.emit('start', { startedAt: this.startedAt });
     return this;
   }
 
-  // Wire a capture process's `-progress` stdout into the live stats map.
-  _wireProgress(id, child) {
-    this.stderr.set(id, '');
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
-      this.jobProgress.set(id, {
-        ...(this.jobProgress.get(id) || {}),
-        ...normalizeProgress(parseProgress(chunk)),
-      });
+  launch(id, sources, args, camera) {
+    const child = spawn(this.ffmpegPath, args, { stdio: camera ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'] });
+    const task = { id, sources, child, stderr: '', progressText: '' };
+    task.finished = new Promise(resolve => { child.once('close', resolve); });
+    child.stdout.on('data', chunk => {
+      task.progressText += String(chunk);
+      let boundary;
+      while ((boundary = task.progressText.indexOf('progress=')) >= 0) {
+        const end = task.progressText.indexOf('\n', boundary);
+        if (end < 0) break;
+        this.progress.set(id, parseProgressLines(task.progressText.slice(0, end)));
+        task.progressText = task.progressText.slice(end + 1);
+      }
     });
-    child.stderr.on('data', (d) => this.stderr.set(id, this.stderr.get(id) + d));
+    child.stderr.on('data', chunk => { task.stderr = (task.stderr + chunk).slice(-3000); });
+    if (camera) child.stdio[3].on('data', createJpegParser(jpeg => this.emit('preview', { label: sources[0].label, jpeg })));
+    child.once('error', error => this.reportError(sources, error));
+    child.once('close', (code, signal) => {
+      for (const source of sources) this.emit('source-exit', { label: source.label || 'audio', code, signal, stderr: task.stderr });
+      if (!this.stopping && code !== 0 && signal == null) this.reportError(sources, new Error(task.stderr.trim() || `FFmpeg exited with ${code}`));
+    });
+    this.tasks.push(task);
   }
 
-  _startTap() {
-    if (this.plan.mic == null) return;
-    this.tap = spawnMicTap(this.ffmpegPath, this.plan.mic.index, (lvl) => this.emit('level', lvl));
+  reportError(sources, error) {
+    for (const source of sources) this.emit('source-error', { label: source.label || 'audio', error });
   }
 
-  _failJob(job, error) {
-    for (const s of job.sources) this.emit('source-error', { label: s.label, error });
+  startMeter(index) {
+    const child = spawn(this.ffmpegPath, meterCommand(index), { stdio: ['ignore', 'pipe', 'ignore'] });
+    this.meter = child;
+    child.on('error', () => {});
+    let samples = Buffer.alloc(0);
+    child.stdout.on('data', chunk => {
+      samples = Buffer.concat([samples, chunk]);
+      while (samples.length >= 512) {
+        const frame = samples.subarray(0, 512);
+        samples = samples.subarray(512);
+        let sum = 0;
+        let peak = 0;
+        for (let offset = 0; offset < frame.length; offset += 2) {
+          const amplitude = Math.abs(frame.readInt16LE(offset) / 32768);
+          sum += amplitude * amplitude;
+          peak = Math.max(peak, amplitude);
+        }
+        const rms = Math.sqrt(sum / 256);
+        const db = rms ? 20 * Math.log10(rms) : -Infinity;
+        this.emit('level', { unit: Math.max(0, Math.min(1, (db + 60) / 60)), rms, peak });
+      }
+    });
   }
 
-  // Per-file byte sizes come from the filesystem (a grouped process reports only
-  // aggregate progress), while fps/drop come from that job's progress stream.
-  _startStatPoll() {
-    const sample = (label, id, outPath) => {
-      const jp = this.jobProgress.get(id) || {};
-      let bytes = null;
-      try {
-        bytes = fs.statSync(outPath).size;
-      } catch {}
-      const stats = {
-        bytes,
-        fps: jp.fps ?? null,
-        drop: jp.drop ?? null,
-        seconds: jp.seconds ?? null,
-      };
-      this.stats.set(label, stats);
-      this.emit('stats', { label, stats });
-    };
-    const poll = () => {
-      for (const s of this.plan.sources) sample(s.label, this.jobOf.get(s.label), s.outPath);
-      if (this.plan.audio) sample('audio', 'audio', this.plan.audio.outPath);
-    };
-    this.statTimer = setInterval(poll, 400);
+  reportStats() {
+    for (const source of [...this.plan.sources, ...(this.plan.audio ? [{ ...this.plan.audio, label: 'audio' }] : [])]) {
+      const task = this.tasks.find(item => item.sources.includes(source) || (source.label === 'audio' && item.id === 'audio'));
+      const progress = this.progress.get(task?.id) || {};
+      const stats = { bytes: fileBytes(source.outPath), fps: progress.fps ?? null, drop: progress.drop ?? null, seconds: progress.seconds ?? null };
+      this.emit('stats', { label: source.label, stats });
+    }
   }
 
-  async stop({ graceMs = 4000 } = {}) {
-    if (this.stopping) return this._results;
+  stop({ graceMs = 4000 } = {}) {
+    if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
+    clearInterval(this.statsTimer);
     this.emit('stopping');
-    if (this.statTimer) clearInterval(this.statTimer);
+    this.stopPromise = this.finish(graceMs);
+    return this.stopPromise;
+  }
 
-    const waits = [];
-    for (const [, child] of this.procs) {
-      waits.push(
-        new Promise((resolve) => {
-          if (child.exitCode != null || child.signalCode != null) return resolve();
-          child.once('exit', () => resolve());
-          try {
-            child.stdin.write('q');
-            child.stdin.end();
-          } catch {
-            /* fall through to signals */
-          }
-          setTimeout(() => {
-            if (child.exitCode == null && child.signalCode == null) {
-              try {
-                child.kill('SIGINT');
-              } catch {}
-              setTimeout(() => {
-                if (child.exitCode == null && child.signalCode == null) {
-                  try {
-                    child.kill('SIGKILL');
-                  } catch {}
-                }
-              }, 1500);
-            }
-          }, graceMs);
-        }),
-      );
-    }
-    await Promise.all(waits);
-    if (this.tap) {
-      try {
-        this.tap.kill('SIGKILL');
-      } catch {}
-    }
-
-    if (this.plan.settings.remuxToMp4) {
-      for (const s of this.plan.sources) await this._remux(s); // video only; audio.wav is final
-    }
-
-    // All processes got `q` together, so their content ENDS at the same instant; a shorter
-    // file simply started later (device warmup). End-align by actual duration: the longest
-    // file is the reference (offset 0), everyone else begins `maxDur - dur` ms later.
-    const durs = new Map();
-    for (const s of this.plan.sources) durs.set(s.label, await this._probeDurationSec(s.outPath));
-    if (this.plan.audio) durs.set('audio', await this._probeDurationSec(this.plan.audio.outPath));
-    const known = [...durs.values()].filter((d) => d != null);
-    const maxDur = known.length ? Math.max(...known) : null;
-    const offsetMs = (label) => {
-      const d = durs.get(label);
-      return maxDur != null && d != null ? Math.round((maxDur - d) * 1000) : null;
-    };
-
-    // Pad the mic's warmup-delayed front with silence so audio.wav drops in at 0, aligned
-    // with the video. (The lost warmup window becomes leading silence, not a desync.)
-    let audioPaddedMs = 0;
-    if (this.plan.audio) {
-      const off = offsetMs('audio');
-      if (off != null && off > 20 && (await this._padAudioFront(this.plan.audio.outPath, off))) {
-        audioPaddedMs = off;
-        durs.set('audio', maxDur); // now full-length and aligned at 0
-      }
-    }
-
-    this.endedAt = new Date().toISOString();
-
-    const sizeOf = (outPath) => {
-      try {
-        return fs.statSync(outPath).size;
-      } catch {
-        return null;
-      }
-    };
-    const videoResults = this.plan.sources.map((s) => ({
-      label: s.label,
-      kind: 'video',
-      file: s.outPath,
-      mp4: s._mp4 || null,
-      bytes: sizeOf(s.outPath),
-      seconds: durs.get(s.label) ?? (this.stats.get(s.label) || {}).seconds ?? null,
-      drop: (this.stats.get(s.label) || {}).drop ?? 0,
-      startOffsetMs: offsetMs(s.label),
+  async finish(graceMs) {
+    await Promise.all(this.tasks.map(async ({ child, finished }) => {
+      if (child.exitCode != null || child.signalCode != null) return finished;
+      const interrupt = setTimeout(() => { if (child.exitCode == null) child.kill('SIGINT'); }, graceMs);
+      const force = setTimeout(() => { if (child.exitCode == null) child.kill('SIGKILL'); }, graceMs + 1500);
+      try { child.stdin.end('q'); } catch { child.kill('SIGINT'); }
+      await finished;
+      clearTimeout(interrupt);
+      clearTimeout(force);
     }));
-    const audioResults = this.plan.audio
-      ? [
-          {
-            label: 'audio',
-            kind: 'audio',
-            file: this.plan.audio.outPath,
-            mp4: null,
-            bytes: sizeOf(this.plan.audio.outPath),
-            seconds: durs.get('audio') ?? null,
-            drop: 0,
-            startOffsetMs: offsetMs('audio'),
-            paddedMs: audioPaddedMs,
-          },
-        ]
-      : [];
-    this._results = [...videoResults, ...audioResults];
-    this.emit('done', this._results);
-    return this._results;
-  }
+    this.meter?.kill('SIGKILL');
 
-  async _remux(source) {
-    let exists = false;
-    try {
-      exists = fs.statSync(source.outPath).size > 0;
-    } catch {}
-    if (!exists) return; // nothing captured; skip
-    const out = source.outPath.replace(/\.[^.]+$/, '.mp4');
-    await new Promise((resolve) => {
-      const child = spawn(this.ffmpegPath, buildRemuxArgs(source.outPath, out), {
-        stdio: 'ignore',
-      });
-      child.on('error', () => resolve());
-      child.on('exit', (code) => {
-        if (code === 0) source._mp4 = out;
-        resolve();
-      });
-    });
-  }
-
-  // Actual content duration via ffprobe (resolves null if ffprobe is missing/fails). Used
-  // for end-alignment - more accurate than `-progress` out_time, which mis-times audio.
-  _probeDurationSec(file) {
-    const ffprobe = this.ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = spawn(
-          ffprobe === this.ffmpegPath ? 'ffprobe' : ffprobe,
-          ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', file],
-          { stdio: ['ignore', 'pipe', 'ignore'] },
-        );
-      } catch {
-        return resolve(null);
+    const mp4 = new Map();
+    if (this.plan.settings.remuxToMp4) {
+      for (const source of this.plan.sources) {
+        if (!fileBytes(source.outPath)) continue;
+        const destination = source.outPath.replace(/\.[^.]+$/, '.mp4');
+        if ((await runProcess(this.ffmpegPath, mp4Command(source.outPath, destination))).ok) mp4.set(source.label, destination);
       }
-      let out = '';
-      child.stdout.on('data', (d) => (out += d));
-      child.on('error', () => resolve(null));
-      child.on('exit', () => {
-        const n = Number(String(out).trim());
-        resolve(Number.isFinite(n) && n > 0 ? n : null);
-      });
-    });
-  }
-
-  // Prepend `ms` of silence to the mic file in place, so it lines up at the timeline start.
-  async _padAudioFront(file, ms) {
-    const tmp = file.replace(/\.wav$/i, '.aligned.wav');
-    const ok = await new Promise((resolve) => {
-      let child;
-      try {
-        child = spawn(
-          this.ffmpegPath,
-          [
-            '-hide_banner',
-            '-loglevel',
-            'error',
-            '-i',
-            file,
-            '-af',
-            `adelay=${ms}:all=1`,
-            '-y',
-            tmp,
-          ],
-          { stdio: 'ignore' },
-        );
-      } catch {
-        return resolve(false);
-      }
-      child.on('error', () => resolve(false));
-      child.on('exit', (code) => resolve(code === 0));
-    });
-    if (ok) {
-      try {
-        fs.renameSync(tmp, file);
-        return true;
-      } catch {}
     }
-    try {
-      fs.rmSync(tmp, { force: true });
-    } catch {}
-    return false;
-  }
-}
 
-// The pluggable engine seam. A future ObsEngine implements the same surface.
-export class FfmpegEngine {
-  constructor({ ffmpegPath = 'ffmpeg' } = {}) {
-    this.ffmpegPath = ffmpegPath;
+    const duration = new Map();
+    for (const source of this.plan.sources) duration.set(source.label, await this.probeDuration(source.outPath));
+    if (this.plan.audio) duration.set('audio', await this.probeDuration(this.plan.audio.outPath));
+    const maximum = Math.max(0, ...[...duration.values()].filter(value => value != null));
+    const offset = label => duration.get(label) == null ? null : Math.round((maximum - duration.get(label)) * 1000);
+
+    let paddedMs = 0;
+    if (this.plan.audio && offset('audio') > 20) {
+      const file = this.plan.audio.outPath;
+      const aligned = path.join(path.dirname(file), 'audio.aligned.wav');
+      const delay = offset('audio');
+      if ((await runProcess(this.ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', file, '-af', `adelay=${delay}:all=1`, '-y', aligned])).ok) {
+        fs.renameSync(aligned, file);
+        paddedMs = delay;
+        duration.set('audio', maximum);
+      } else fs.rmSync(aligned, { force: true });
+    }
+
+    const results = this.plan.sources.map(source => ({
+      label: source.label, kind: 'video', file: source.outPath, mp4: mp4.get(source.label) || null,
+      bytes: fileBytes(source.outPath), seconds: duration.get(source.label), drop: 0, startOffsetMs: offset(source.label)
+    }));
+    if (this.plan.audio) results.push({
+      label: 'audio', kind: 'audio', file: this.plan.audio.outPath, mp4: null,
+      bytes: fileBytes(this.plan.audio.outPath), seconds: duration.get('audio'), drop: 0,
+      startOffsetMs: offset('audio'), paddedMs
+    });
+    this.endedAt = new Date().toISOString();
+    this.emit('done', results);
+    return results;
   }
-  createRecording(plan) {
-    return new Recorder(plan, { ffmpegPath: this.ffmpegPath });
+
+  async probeDuration(file) {
+    const binary = this.ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+    const probe = await runProcess(binary === this.ffmpegPath ? 'ffprobe' : binary, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', file], true);
+    const seconds = Number(probe.output.trim());
+    return probe.ok && Number.isFinite(seconds) && seconds > 0 ? seconds : null;
   }
 }

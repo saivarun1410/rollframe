@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { enumerateDevices, probeVideoModes, pickFramerate } from './backend/devices.js';
 import { Recorder } from './backend/recorder.js';
 import { createJpegParser } from './backend/jpegStream.js';
-import { buildCameraPreviewArgs } from './backend/ffmpegArgs.js';
+import { cameraPreviewCommand } from './backend/commands.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const configPath = path.join(app.getPath('userData'), 'settings.json');
@@ -156,7 +156,7 @@ ipcMain.handle('start-camera-previews', async (_event, indices) => {
   for (const index of [...new Set(indices.map(Number))]) {
     const camera = devices.video.find(device => device.index === index && device.kind === 'camera');
     if (!camera) continue;
-    const child = spawn('ffmpeg', buildCameraPreviewArgs({ videoIndex: index, flipCamera: readSettings().flipCamera }), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('ffmpeg', cameraPreviewCommand(index, readSettings().flipCamera), { stdio: ['ignore', 'pipe', 'pipe'] });
     idleCameraPreviews.set(index, child);
     let frames = 0;
     let stderr = '';
