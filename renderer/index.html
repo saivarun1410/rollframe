@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rollframe</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">R</div><div><strong>ROLLFRAME</strong><small>CAPTURE STUDIO</small></div></div>
+      <div class="nav-label">WORKSPACE</div>
+      <button class="nav-item active" data-view="studio"><span class="nav-icon">01</span><span>STUDIO</span><span class="nav-shortcut">⌘1</span></button>
+      <button class="nav-item" data-view="library"><span class="nav-icon">02</span><span>LIBRARY</span><span class="nav-count" id="libraryCount">0</span></button>
+      <div class="sidebar-spacer"></div>
+      <div class="side-foot"><span class="online-dot"></span><div><strong>LOCAL RECORDING</strong><small>FILES STAY ON THIS MAC</small></div></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><div class="breadcrumb"><span>ROLLFRAME</span><span class="slash">/</span><strong id="breadcrumbCurrent">STUDIO</strong></div><div class="top-actions"><span class="local-pill">CAPTURE ENGINE READY</span><button class="icon-button" id="refreshButton" title="Rescan devices">RESCAN</button></div></header>
+      <section id="studioView" class="view">
+        <div class="page-heading"><div><div class="eyebrow">CAPTURE / STUDIO</div><h1>YOUR NEXT TAKE<span class="period">.</span></h1><p>See your sources live. Record each angle to its own file.</p></div><div class="date-chip"><span>SESSION DATE</span><b id="todayDate"></b></div></div>
+        <div class="studio-grid">
+          <div class="studio-main">
+            <div class="section-head first-section"><div><span class="section-number">01 / SOURCES</span><h3>CAMERAS &amp; SCREENS</h3><p>Select the views you want to capture.</p></div><button class="text-button" id="rescanButton">RESCAN DEVICES</button></div>
+            <div class="source-grid" id="sourceGrid"><div class="skeleton-card"></div><div class="skeleton-card"></div></div>
+            <div class="section-head mic-head"><div><span class="section-number">02 / AUDIO</span><h3>MICROPHONE</h3><p>Saved as a separate lossless audio track.</p></div></div>
+            <div class="audio-card"><div class="audio-icon">MIC</div><div class="audio-info"><strong>AUDIO INPUT</strong><span id="micSubtext">Choose your input device</span></div><div class="meter" id="meter"></div><select id="micSelect" aria-label="Microphone"><option value="">No microphone</option></select></div>
+          </div>
+          <div class="studio-side">
+            <div class="setup-card"><div class="card-title"><span class="title-icon">03</span><div><h3>RECORDING SETTINGS</h3><p>Choose how this take is saved.</p></div></div><label class="field-label" for="titleInput">TAKE NAME</label><input id="titleInput" class="text-input" maxlength="120" placeholder="e.g. Product walkthrough" value="Untitled recording" /><div class="field-split"><div><label class="field-label" for="fpsSelect">FRAME RATE</label><select id="fpsSelect" class="select-input"><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select></div><div><label class="field-label" for="qualitySelect">QUALITY</label><select id="qualitySelect" class="select-input"><option value="compact">Compact · 4 Mb/s</option><option value="balanced">Balanced · 8 Mb/s</option><option value="maximum">Maximum · 16 Mb/s</option></select></div></div><label class="field-label">SAVE LOCATION</label><button class="folder-field" id="folderButton"><span id="folderText">Loading...</span><b>CHANGE</b></button><div class="toggle-row"><div><strong>CAPTURE CURSOR</strong><span>Show the pointer on screen tracks</span></div><label class="switch"><input id="cursorToggle" type="checkbox" checked /><span></span></label></div><div class="toggle-row"><div><strong>FLIP CAMERA LEFT/RIGHT</strong><span>Applies to preview and saved video</span></div><label class="switch"><input id="flipToggle" type="checkbox" checked /><span></span></label></div><div class="toggle-row"><div><strong>MAKE MP4 COPIES</strong><span>Keep the original MKV files too</span></div><label class="switch"><input id="mp4Toggle" type="checkbox" checked /><span></span></label></div></div>
+            <div class="record-card"><div class="record-top"><span id="statusDot" class="status-dot"></span><strong id="statusTitle">STANDBY</strong><span id="recordClock">00:00:00</span></div><p id="statusDetail">Choose at least one source to begin.</p><div class="recording-stats" id="recordingStats" hidden><div><small>TRACKS</small><b id="trackCount">0</b></div><div><small>DATA</small><b id="dataCount">0 MB</b></div><div><small>MARKERS</small><b id="markerCount">0</b></div></div><button id="recordButton" class="record-button" disabled><span id="recordButtonText">START RECORDING</span></button><button id="markerButton" class="marker-button" hidden>ADD MARKER <kbd>M</kbd></button><div class="keyboard-hint">⌘ R &nbsp; START / STOP &nbsp; · &nbsp; M &nbsp; MARKER</div></div>
+            <div class="help-card"><strong>SEPARATE TRACKS. ONE TAKE.</strong><p>Video and audio files are saved locally with timing information for your editor.</p></div>
+          </div>
+        </div>
+      </section>
+      <section id="libraryView" class="view" hidden><div class="page-heading"><div><div class="eyebrow">YOUR FILES / LIBRARY</div><h1>RECORDINGS<span class="period">.</span></h1><p>Open a session to work with its source files.</p></div></div><div class="library-toolbar"><span id="librarySummary">Recent recordings</span><button class="text-button" id="openLibraryFolder">OPEN RECORDINGS FOLDER</button></div><div id="libraryList" class="library-list"></div></section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "rollframe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A visual multi-source recorder for macOS",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.js && node --check preload.cjs && node --check renderer/app.js && node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}
